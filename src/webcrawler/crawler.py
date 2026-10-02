@@ -162,25 +162,36 @@ class Crawler:
 
         assert self._session is not None
         try:
-            async with self._session.get(url, allow_redirects=True) as resp:
-                ctype = resp.headers.get("Content-Type", "")
-                if resp.status != 200 or "text/html" not in ctype:
-                    self.report.failed += 1
-                    await self.store.save_page(
-                        PageRecord(
-                            url=url,
-                            host=urllib.parse.urlsplit(url).netloc,
-                            status=resp.status,
-                            title=None,
-                            text_len=0,
-                            content_type=ctype,
-                        ),
-                        links=[],
-                    )
-                    return
-                body = await resp.content.read(MAX_PAGE_BYTES)
+            body: bytes | None = None
+            for attempt in range(2):
+                async with self._session.get(url, allow_redirects=True) as resp:
+                    if resp.status in (429, 503) and attempt == 0:
+                        retry_after = float(resp.headers.get("Retry-After", "1.5"))
+                        await asyncio.sleep(min(retry_after, 3.0))
+                        continue
 
-            title, text_len, links = self._extract(body, url)
+                    ctype = resp.headers.get("Content-Type", "")
+                    if resp.status != 200 or "text/html" not in ctype:
+                        self.report.failed += 1
+                        await self.store.save_page(
+                            PageRecord(
+                                url=url,
+                                host=urllib.parse.urlsplit(url).netloc,
+                                status=resp.status,
+                                title=None,
+                                text_len=0,
+                                content_type=ctype,
+                            ),
+                            links=[],
+                        )
+                        return
+                    body = await resp.content.read(MAX_PAGE_BYTES)
+                    break
+
+            if body is None:
+                return
+
+            title, text_len, links, markdown = self._extract(body, url)
             await self.store.save_page(
                 PageRecord(
                     url=url,
@@ -189,6 +200,7 @@ class Crawler:
                     title=title,
                     text_len=text_len,
                     content_type="text/html",
+                    content_markdown=markdown,
                 ),
                 links=links,
             )
@@ -230,16 +242,37 @@ class Crawler:
 
     # ------------------------------------------------------------- parsing ---
     @staticmethod
-    def _extract(body: bytes, base_url: str) -> tuple[str | None, int, list[str]]:
+    def _extract(body: bytes, base_url: str) -> tuple[str | None, int, list[str], str]:
         soup = BeautifulSoup(body, "lxml")
         title = soup.title.string.strip() if soup.title and soup.title.string else None
-        for tag in soup(["script", "style", "noscript", "template"]):
-            tag.decompose()
-        text_len = len(soup.get_text(" ", strip=True))
 
+        # Collect outgoing valid links before decomposing elements
         links: list[str] = []
         for anchor in soup.find_all("a", href=True):
             absolute = urllib.parse.urljoin(base_url, anchor["href"])
             if urllib.parse.urlsplit(absolute).scheme in ("http", "https"):
                 links.append(absolute.split("#")[0])
-        return title, text_len, links
+
+        # Remove boilerplate and script/style elements
+        for tag in soup(["script", "style", "noscript", "template", "svg", "nav", "footer", "header", "aside"]):
+            tag.decompose()
+
+        # Convert headings to markdown
+        for i in range(1, 7):
+            for h in soup.find_all(f"h{i}"):
+                h.string = f"\n{'#' * i} {h.get_text().strip()}\n"
+
+        # Convert list items
+        for li in soup.find_all("li"):
+            li.string = f"\n- {li.get_text().strip()}"
+
+        raw_text = soup.get_text("\n", strip=True)
+        text_len = len(raw_text)
+
+        # Build clean markdown
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        markdown = "\n\n".join(lines)
+        if title and not markdown.startswith("#"):
+            markdown = f"# {title}\n\n{markdown}"
+
+        return title, text_len, links, markdown

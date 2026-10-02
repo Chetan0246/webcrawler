@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS pages (
     status INTEGER,
     title TEXT,
     text_len INTEGER DEFAULT 0,
+    content_markdown TEXT,
     content_type TEXT,
     fetched_at TEXT NOT NULL,
     error TEXT
@@ -39,6 +40,7 @@ class PageRecord:
     title: str | None
     text_len: int
     content_type: str | None
+    content_markdown: str | None = None
     error: str | None = None
 
 
@@ -53,6 +55,10 @@ class Store:
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
+        try:
+            await self._db.execute("ALTER TABLE pages ADD COLUMN content_markdown TEXT")
+        except Exception:
+            pass
         await self._db.commit()
         return self
 
@@ -81,12 +87,13 @@ class Store:
         async with self.tx() as db:
             cur = await db.execute(
                 """INSERT INTO pages
-                       (url, host, status, title, text_len, content_type, fetched_at, error)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       (url, host, status, title, text_len, content_markdown, content_type, fetched_at, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(url) DO UPDATE SET
                      status=excluded.status,
                      title=excluded.title,
                      text_len=excluded.text_len,
+                     content_markdown=excluded.content_markdown,
                      content_type=excluded.content_type,
                      fetched_at=excluded.fetched_at,
                      error=excluded.error""",
@@ -96,6 +103,7 @@ class Store:
                     rec.status,
                     rec.title,
                     rec.text_len,
+                    rec.content_markdown,
                     rec.content_type,
                     datetime.now(UTC).isoformat(timespec="seconds"),
                     rec.error,
@@ -113,6 +121,13 @@ class Store:
             cur = await db.execute(
                 "SELECT url, status, title, text_len FROM pages ORDER BY text_len DESC LIMIT ?",
                 (limit,),
+            )
+            return list(await cur.fetchall())
+
+    async def get_all_successful_pages(self) -> list[aiosqlite.Row]:
+        async with self.tx() as db:
+            cur = await db.execute(
+                "SELECT url, host, status, title, text_len, content_markdown, fetched_at FROM pages WHERE status = 200"
             )
             return list(await cur.fetchall())
 
