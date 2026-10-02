@@ -254,7 +254,10 @@ class Crawler:
                 links.append(absolute.split("#")[0])
 
         # Remove boilerplate and script/style elements
-        for tag in soup(["script", "style", "noscript", "template", "svg", "nav", "footer", "header", "aside"]):
+        noise_tags = [
+            "script", "style", "noscript", "template", "svg", "nav", "footer", "header", "aside"
+        ]
+        for tag in soup(noise_tags):
             tag.decompose()
 
         # Convert headings to markdown

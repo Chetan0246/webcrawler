@@ -97,7 +97,6 @@ def test_extract_clean_markdown() -> None:
 
 
 async def test_store_saves_and_retrieves_markdown(tmp_path) -> None:
-    from pathlib import Path
     from webcrawler.models import PageRecord, Store
 
     db_path = tmp_path / "test_crawl.db"

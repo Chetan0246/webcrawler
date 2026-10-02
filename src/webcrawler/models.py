@@ -55,10 +55,10 @@ class Store:
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(SCHEMA)
-        try:
+        import contextlib
+
+        with contextlib.suppress(Exception):
             await self._db.execute("ALTER TABLE pages ADD COLUMN content_markdown TEXT")
-        except Exception:
-            pass
         await self._db.commit()
         return self
 
@@ -87,7 +87,8 @@ class Store:
         async with self.tx() as db:
             cur = await db.execute(
                 """INSERT INTO pages
-                       (url, host, status, title, text_len, content_markdown, content_type, fetched_at, error)
+                       (url, host, status, title, text_len, content_markdown,
+                        content_type, fetched_at, error)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(url) DO UPDATE SET
                      status=excluded.status,
@@ -127,7 +128,8 @@ class Store:
     async def get_all_successful_pages(self) -> list[aiosqlite.Row]:
         async with self.tx() as db:
             cur = await db.execute(
-                "SELECT url, host, status, title, text_len, content_markdown, fetched_at FROM pages WHERE status = 200"
+                "SELECT url, host, status, title, text_len, content_markdown, fetched_at "
+                "FROM pages WHERE status = 200"
             )
             return list(await cur.fetchall())
 

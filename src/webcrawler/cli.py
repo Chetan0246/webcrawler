@@ -7,6 +7,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -31,12 +32,11 @@ def _sanitize_filename(name: str) -> str:
     return clean[:120].strip("._") or "page"
 
 
-async def _export_data(
-    store: Store,
+def _export_data(
+    pages: list[Any],
     export_markdown: Path | None = None,
     export_jsonl: Path | None = None,
 ) -> None:
-    pages = await store.get_all_successful_pages()
     if not pages:
         return
 
@@ -53,7 +53,8 @@ async def _export_data(
                     "fetched_at": row["fetched_at"],
                 }
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        console.print(f"Exported [green]{len(pages)}[/green] pages to JSONL: [bold]{export_jsonl}[/bold]")
+        msg = f"Exported {len(pages)} pages to JSONL: {export_jsonl}"
+        console.print(f"[green]{msg}[/green]")
 
     if export_markdown:
         export_markdown.mkdir(parents=True, exist_ok=True)
@@ -61,9 +62,11 @@ async def _export_data(
             base_name = row["title"] or row["url"].split("//")[-1]
             file_name = f"{i + 1:03d}_{_sanitize_filename(base_name)}.md"
             file_path = export_markdown / file_name
-            content = row["content_markdown"] or f"# {row['title'] or row['url']}\n\n(No text content)"
+            fallback = f"# {row['title'] or row['url']}\n\n(No text content)"
+            content = row["content_markdown"] or fallback
             file_path.write_text(content, encoding="utf-8")
-        console.print(f"Exported [green]{len(pages)}[/green] Markdown files to: [bold]{export_markdown}[/bold]")
+        msg = f"Exported {len(pages)} Markdown files to: {export_markdown}"
+        console.print(f"[green]{msg}[/green]")
 
 
 @app.command()
@@ -94,7 +97,7 @@ def crawl(
         follow_external=follow_external,
     )
 
-    async def _run() -> tuple[Crawler, Store]:
+    async def _run() -> tuple[Crawler, list[Any]]:
         async with Store(db) as store:
             crawler = Crawler(config, store)
 
@@ -114,21 +117,24 @@ def crawl(
                 crawler.on_progress(on_progress)
                 await crawler.run()
 
+            pages = []
             if export_markdown or export_jsonl:
-                await _export_data(store, export_markdown=export_markdown, export_jsonl=export_jsonl)
+                pages = await store.get_all_successful_pages()
 
-            return crawler, store
+            return crawler, pages
 
-    crawler, store = asyncio.run(_run())
+    crawler, pages = asyncio.run(_run())
+    if export_markdown or export_jsonl:
+        _export_data(pages, export_markdown=export_markdown, export_jsonl=export_jsonl)
+
     report = crawler.report.as_dict()
     table = Table(title="Crawl report", header_style="bold magenta")
     for k, v in report.items():
         table.add_row(k, str(v))
     console.print(table)
     console.print(f"Results stored in [bold]{db}[/bold] — explore with:")
-    console.print(
-        f'  sqlite3 "{db}" "SELECT url, title, text_len FROM pages ORDER BY text_len DESC LIMIT 20;"'
-    )
+    query_cmd = f'  sqlite3 "{db}" "SELECT url, title, text_len FROM pages LIMIT 20;"'
+    console.print(query_cmd)
 
 
 @app.command()
@@ -146,11 +152,12 @@ def export(
         console.print(f"[red]Error: database {db} does not exist.[/red]")
         raise typer.Exit(code=1)
 
-    async def _run_export() -> None:
+    async def _fetch() -> list[Any]:
         async with Store(db) as store:
-            await _export_data(store, export_markdown=export_markdown, export_jsonl=export_jsonl)
+            return await store.get_all_successful_pages()
 
-    asyncio.run(_run_export())
+    pages = asyncio.run(_fetch())
+    _export_data(pages, export_markdown=export_markdown, export_jsonl=export_jsonl)
 
 
 if __name__ == "__main__":
